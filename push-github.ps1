@@ -78,15 +78,23 @@ if (-not $hasOrigin) {
     throw "GitHub repository does not exist yet. Re-run with -Visibility private or -Visibility public."
   }
 
-  Write-Host "Creating GitHub repository '$RepoName' as $Visibility and pushing..."
-  & gh repo create $RepoName "--$Visibility" --source . --remote origin --push
+  Write-Host "Creating GitHub repository '$RepoName' as $Visibility..."
+  & gh repo create $RepoName "--$Visibility" --source . --remote origin
   if ($LASTEXITCODE -ne 0) {
-    throw "GitHub repository creation or push failed."
+    throw "GitHub repository creation failed."
   }
-} else {
-  Write-Host "Pushing to existing origin..."
-  Run-Git push origin main
 }
+
+$proxy = "http://127.0.0.1:7897"
+$githubUser = "bhcgdh"
+$proxyListening = Get-NetTCPConnection -State Listen -LocalPort 7897 -ErrorAction SilentlyContinue
+if (-not $proxyListening) {
+  throw "Local GitHub proxy is not listening on 127.0.0.1:7897."
+}
+
+Write-Host "Pushing through local proxy..."
+$env:GCM_INTERACTIVE = "Never"
+Run-Git -c "credential.username=$githubUser" -c "credential.interactive=never" -c "http.proxy=$proxy" -c "https.proxy=$proxy" push -u origin main
 
 Write-Host "Push completed."
 Run-Git status -sb
