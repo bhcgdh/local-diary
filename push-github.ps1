@@ -67,13 +67,11 @@ if ($LASTEXITCODE -eq 1) {
   Write-Host "No new changes to commit."
 }
 
-$hasOrigin = $false
-& git remote get-url origin *> $null
-if ($LASTEXITCODE -eq 0) {
-  $hasOrigin = $true
-} elseif ($LASTEXITCODE -ne 2) {
-  throw "Unable to inspect git remote origin."
+$remotes = & git remote
+if ($LASTEXITCODE -ne 0) {
+  throw "Unable to inspect git remotes."
 }
+$hasOrigin = $remotes -contains "origin"
 
 if (-not $hasOrigin) {
   if (-not $Visibility) {
