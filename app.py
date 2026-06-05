@@ -229,6 +229,8 @@ class DiaryStore:
         self.connection.commit()
 
     def close(self):
+        self.export_table()
+        self.export_todos()
         self.connection.close()
 
 

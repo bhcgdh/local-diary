@@ -39,6 +39,18 @@ class DiaryStoreTest(unittest.TestCase):
         self.assertEqual(rows[0], ["id", "时间", "日志"])
         self.assertEqual(rows[1], ["155", "2026-06-04", "农历和干支\n今天的日记"])
 
+    def test_close_exports_csv_files(self):
+        self.store.save("2026-06-04", "Close export diary")
+        self.store.save_todo("2026-06-04", "Close export todo")
+        self.store.year_table_path(2026).unlink()
+        self.store.todo_table_path().unlink()
+
+        self.store.close()
+
+        self.assertTrue(self.store.year_table_path(2026).exists())
+        self.assertTrue(self.store.todo_table_path().exists())
+        self.store = DiaryStore(Path(self.temp_dir.name) / "test.db")
+
     def test_year_rows_uses_same_three_column_structure(self):
         self.store.save("2026-06-04", "今天的日记")
 
