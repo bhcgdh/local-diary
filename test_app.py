@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app import (
     DiaryStore,
+    acquire_single_instance_lock,
     build_evernote_enex,
     get_date_info,
     get_day_ganzhi,
@@ -87,6 +88,41 @@ class DiaryStoreTest(unittest.TestCase):
 
         self.assertEqual(self.store.get("2026-06-04"), "")
 
+    def test_stale_empty_diary_does_not_delete_longer_content(self):
+        self.store.save("2026-06-04", "已经写好的长日记")
+
+        saved = self.store.save("2026-06-04", "", expected_content="")
+
+        self.assertFalse(saved)
+        self.assertEqual(self.store.get("2026-06-04"), "已经写好的长日记")
+
+    def test_stale_shorter_diary_does_not_overwrite_longer_content(self):
+        self.store.save("2026-06-04", "旧内容")
+        second_store = DiaryStore(Path(self.temp_dir.name) / "test.db")
+        try:
+            loaded = self.store.get("2026-06-04")
+            second_store.save("2026-06-04", "这是另一个窗口写入的更长日记内容")
+
+            saved = self.store.save(
+                "2026-06-04", "短", expected_content=loaded
+            )
+
+            self.assertFalse(saved)
+            self.assertEqual(
+                self.store.get("2026-06-04"), "这是另一个窗口写入的更长日记内容"
+            )
+        finally:
+            second_store.close()
+
+    def test_intentional_shorter_diary_is_allowed_when_not_stale(self):
+        self.store.save("2026-06-04", "较长的原始内容")
+        loaded = self.store.get("2026-06-04")
+
+        saved = self.store.save("2026-06-04", "短内容", expected_content=loaded)
+
+        self.assertTrue(saved)
+        self.assertEqual(self.store.get("2026-06-04"), "短内容")
+
     def test_setting_is_persisted(self):
         self.store.save_setting("theme", "薄荷绿")
 
@@ -118,6 +154,14 @@ class DiaryStoreTest(unittest.TestCase):
         self.store.save_todo("2026-06-04", "  ")
 
         self.assertEqual(self.store.get_todo("2026-06-04"), "")
+
+    def test_stale_empty_todo_does_not_delete_longer_content(self):
+        self.store.save_todo("2026-06-04", "已经写好的待办")
+
+        saved = self.store.save_todo("2026-06-04", "", expected_content="")
+
+        self.assertFalse(saved)
+        self.assertEqual(self.store.get_todo("2026-06-04"), "已经写好的待办")
 
 
 class DateInfoTest(unittest.TestCase):
@@ -158,6 +202,17 @@ class EvernoteExportTest(unittest.TestCase):
         self.assertIn("width:6%", enex)
         self.assertIn("width:16%", enex)
         self.assertIn("width:78%", enex)
+
+
+class SingleInstanceTest(unittest.TestCase):
+    def test_second_instance_lock_is_rejected(self):
+        first_lock = acquire_single_instance_lock()
+        self.assertIsNotNone(first_lock)
+        try:
+            second_lock = acquire_single_instance_lock()
+            self.assertIsNone(second_lock)
+        finally:
+            first_lock.close()
 
 
 if __name__ == "__main__":

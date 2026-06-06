@@ -2,8 +2,10 @@ import calendar
 import csv
 import html
 import os
+import socket
 import sqlite3
 import subprocess
+import sys
 import tkinter as tk
 from datetime import date, datetime
 from pathlib import Path
@@ -17,6 +19,7 @@ DB_PATH = APP_DIR / "data" / "diary.db"
 TABLE_DIR = APP_DIR / "data"
 ENSCRIPT_PATH = Path(r"D:\softs1\印象笔记\ENScript.exe")
 EVERNOTE_NOTEBOOK = "B1-日记"
+SINGLE_INSTANCE_PORT = 48765
 THEME = {"bg": "#D8E2EE", "panel": "#FFFFFF", "accent": "#3B6EA8"}
 
 TEXT_MAIN = "#212529"
@@ -99,8 +102,15 @@ class DiaryStore:
         ).fetchone()
         return row[0] if row else ""
 
-    def save(self, diary_date, content):
+    def save(self, diary_date, content, expected_content=None):
         content = content.rstrip()
+        current_content = self.get(diary_date)
+        if (
+            expected_content is not None
+            and current_content != expected_content
+            and len(content.strip()) < len(current_content.strip())
+        ):
+            return False
         if content:
             self.connection.execute(
                 """
@@ -113,11 +123,14 @@ class DiaryStore:
                 (diary_date, content),
             )
         else:
+            if expected_content is not None and current_content != expected_content:
+                return False
             self.connection.execute(
                 "DELETE FROM diaries WHERE diary_date = ?", (diary_date,)
             )
         self.connection.commit()
         self.export_table()
+        return True
 
     def get_todo(self, todo_date):
         row = self.connection.execute(
@@ -125,8 +138,15 @@ class DiaryStore:
         ).fetchone()
         return row[0] if row else ""
 
-    def save_todo(self, todo_date, content):
+    def save_todo(self, todo_date, content, expected_content=None):
         content = content.rstrip()
+        current_content = self.get_todo(todo_date)
+        if (
+            expected_content is not None
+            and current_content != expected_content
+            and len(content.strip()) < len(current_content.strip())
+        ):
+            return False
         if content:
             self.connection.execute(
                 """
@@ -139,9 +159,12 @@ class DiaryStore:
                 (todo_date, content),
             )
         else:
+            if expected_content is not None and current_content != expected_content:
+                return False
             self.connection.execute("DELETE FROM todos WHERE todo_date = ?", (todo_date,))
         self.connection.commit()
         self.export_todos()
+        return True
 
     def export_todos(self):
         rows = self.connection.execute(
@@ -325,6 +348,17 @@ def get_ganzhi_parts(selected_date):
     )
 
 
+def acquire_single_instance_lock():
+    lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        lock_socket.bind(("127.0.0.1", SINGLE_INSTANCE_PORT))
+        lock_socket.listen(1)
+        return lock_socket
+    except OSError:
+        lock_socket.close()
+        return None
+
+
 class DiaryApp:
     def __init__(self, root):
         self.root = root
@@ -337,6 +371,8 @@ class DiaryApp:
         self.is_pinned = False
         self.drag_x = 0
         self.drag_y = 0
+        self.loaded_diary_content = ""
+        self.loaded_todo_content = ""
 
         self.root.title("本地日记")
         self.root.geometry("980x640+80+80")
@@ -728,13 +764,14 @@ class DiaryApp:
         self.wuxing_label.config(text=f"五行纳音：{wuxing}")
         self.editor.delete("1.0", "end")
         content = self.store.get(self.selected_date.isoformat())
+        self.loaded_diary_content = content
         if content and not content.startswith(diary_header):
             content = f"{diary_header}\n{content}"
         self.editor.insert("1.0", content or f"{diary_header}\n")
         self.todo_editor.delete("1.0", "end")
-        self.todo_editor.insert(
-            "1.0", self.store.get_todo(self.selected_date.isoformat())
-        )
+        todo_content = self.store.get_todo(self.selected_date.isoformat())
+        self.loaded_todo_content = todo_content
+        self.todo_editor.insert("1.0", todo_content)
         self.status_label.config(text="")
         self.editor.focus_set()
 
@@ -777,12 +814,27 @@ class DiaryApp:
         content = self.editor.get("1.0", "end-1c")
         if content.strip() == get_diary_header(self.selected_date):
             content = ""
-        self.store.save(self.selected_date.isoformat(), content)
+        diary_saved = self.store.save(
+            self.selected_date.isoformat(),
+            content,
+            expected_content=self.loaded_diary_content,
+        )
         todo_content = self.todo_editor.get("1.0", "end-1c")
-        self.store.save_todo(self.selected_date.isoformat(), todo_content)
+        todo_saved = self.store.save_todo(
+            self.selected_date.isoformat(),
+            todo_content,
+            expected_content=self.loaded_todo_content,
+        )
+        if diary_saved:
+            self.loaded_diary_content = content.rstrip()
+        if todo_saved:
+            self.loaded_todo_content = todo_content.rstrip()
         self.render_calendar()
         if show_status:
-            self.status_label.config(text="已保存到本地")
+            if diary_saved and todo_saved:
+                self.status_label.config(text="已保存到本地")
+            else:
+                self.status_label.config(text="已有较新/更多内容，已跳过覆盖")
 
     def sync_evernote(self):
         self.save_current(show_status=False)
@@ -865,6 +917,9 @@ class DiaryApp:
 
 
 if __name__ == "__main__":
+    instance_lock = acquire_single_instance_lock()
+    if instance_lock is None:
+        sys.exit(0)
     root = tk.Tk()
     app = DiaryApp(root)
     app.style_window_button(app.pin_button)
