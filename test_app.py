@@ -52,6 +52,33 @@ class DiaryStoreTest(unittest.TestCase):
         self.assertTrue(self.store.todo_table_path().exists())
         self.store = DiaryStore(Path(self.temp_dir.name) / "test.db")
 
+    def test_stale_appended_diary_merges_with_current_content(self):
+        self.store.save("2026-06-04", "Old content")
+        second_store = DiaryStore(Path(self.temp_dir.name) / "test.db")
+        try:
+            loaded = self.store.get("2026-06-04")
+            second_store.save("2026-06-04", "Current content")
+
+            saved = self.store.save(
+                "2026-06-04", "Old content\nNew content", expected_content=loaded
+            )
+
+            self.assertTrue(saved)
+            self.assertEqual(
+                self.store.get("2026-06-04"), "Current content\nNew content"
+            )
+        finally:
+            second_store.close()
+
+    def test_backups_keep_latest_five_snapshots(self):
+        for index in range(7):
+            self.store.save("2026-06-04", f"Diary {index}")
+
+        backups = sorted(self.store.backup_dir.iterdir())
+
+        self.assertEqual(len(backups), 5)
+        self.assertTrue(all((backup / "test.db").exists() for backup in backups))
+
     def test_year_rows_uses_same_three_column_structure(self):
         self.store.save("2026-06-04", "今天的日记")
 

@@ -2,6 +2,7 @@ import calendar
 import csv
 import html
 import os
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -63,8 +64,10 @@ BRANCH_WUXING_COLORS = {
 class DiaryStore:
     def __init__(self, db_path=DB_PATH, table_dir=None):
         db_path = Path(db_path)
+        self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.table_dir = Path(table_dir) if table_dir else db_path.parent
+        self.backup_dir = self.table_dir / "data_bak"
         self.connection = sqlite3.connect(db_path)
         self.connection.execute(
             """
@@ -102,16 +105,66 @@ class DiaryStore:
         ).fetchone()
         return row[0] if row else ""
 
+    def backup_data(self):
+        files = [self.db_path, *self.table_dir.glob("*.csv")]
+        files = [path for path in files if path.exists() and path.stat().st_size > 0]
+        if not files:
+            return None
+
+        backup_path = self.backup_dir / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        backup_path.mkdir(parents=True, exist_ok=True)
+        for path in files:
+            shutil.copy2(path, backup_path / path.name)
+        self.prune_backups()
+        return backup_path
+
+    def prune_backups(self, keep=5):
+        if not self.backup_dir.exists():
+            return
+        backups = sorted(
+            [path for path in self.backup_dir.iterdir() if path.is_dir()],
+            key=lambda path: path.name,
+            reverse=True,
+        )
+        for old_backup in backups[keep:]:
+            shutil.rmtree(old_backup)
+
+    def merge_stale_content(self, current_content, content, expected_content):
+        if expected_content is None or current_content == expected_content:
+            return content
+        if not content.strip():
+            return current_content
+        if not current_content.strip():
+            return content
+
+        new_content = content
+        if expected_content and content.startswith(expected_content):
+            new_content = content[len(expected_content) :].lstrip("\r\n")
+        elif expected_content:
+            return current_content
+        if not new_content.strip() or new_content.strip() in current_content:
+            return current_content
+        return f"{current_content.rstrip()}\n{new_content.rstrip()}"
+
     def save(self, diary_date, content, expected_content=None):
         content = content.rstrip()
         current_content = self.get(diary_date)
         if (
             expected_content is not None
             and current_content != expected_content
-            and len(content.strip()) < len(current_content.strip())
+            and not content.strip()
         ):
             return False
+        if (
+            expected_content
+            and current_content != expected_content
+            and content.strip()
+            and not content.startswith(expected_content)
+        ):
+            return False
+        content = self.merge_stale_content(current_content, content, expected_content)
         if content:
+            self.backup_data()
             self.connection.execute(
                 """
                 INSERT INTO diaries (diary_date, content, updated_at)
@@ -125,6 +178,7 @@ class DiaryStore:
         else:
             if expected_content is not None and current_content != expected_content:
                 return False
+            self.backup_data()
             self.connection.execute(
                 "DELETE FROM diaries WHERE diary_date = ?", (diary_date,)
             )
@@ -144,10 +198,19 @@ class DiaryStore:
         if (
             expected_content is not None
             and current_content != expected_content
-            and len(content.strip()) < len(current_content.strip())
+            and not content.strip()
         ):
             return False
+        if (
+            expected_content
+            and current_content != expected_content
+            and content.strip()
+            and not content.startswith(expected_content)
+        ):
+            return False
+        content = self.merge_stale_content(current_content, content, expected_content)
         if content:
+            self.backup_data()
             self.connection.execute(
                 """
                 INSERT INTO todos (todo_date, content, updated_at)
@@ -161,6 +224,7 @@ class DiaryStore:
         else:
             if expected_content is not None and current_content != expected_content:
                 return False
+            self.backup_data()
             self.connection.execute("DELETE FROM todos WHERE todo_date = ?", (todo_date,))
         self.connection.commit()
         self.export_todos()
